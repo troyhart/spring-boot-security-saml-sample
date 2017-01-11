@@ -1,0 +1,21 @@
+security:
+  saml:
+    sp:
+      id: http://dev.navi4.com/n4e
+server:
+  context-path: /uaa
+  port: 9000
+---
+spring:
+  profiles: qa  
+security:
+  saml:
+    sp:
+      id: https://qa.navi4.com/n4e
+---
+spring:
+  profiles: prod  
+security:
+  saml:
+    sp:
+      id: https://prod.navi4.com/n4e

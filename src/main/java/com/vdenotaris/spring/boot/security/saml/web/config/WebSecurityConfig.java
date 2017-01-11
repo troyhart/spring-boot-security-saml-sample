@@ -11,6 +11,7 @@
 
 package com.vdenotaris.spring.boot.security.saml.web.config;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -23,13 +24,14 @@ import org.apache.commons.httpclient.MultiThreadedHttpConnectionManager;
 import org.apache.commons.httpclient.protocol.Protocol;
 import org.apache.commons.httpclient.protocol.ProtocolSocketFactory;
 import org.apache.velocity.app.VelocityEngine;
-import org.opensaml.saml2.metadata.provider.HTTPMetadataProvider;
+import org.opensaml.saml2.metadata.provider.FilesystemMetadataProvider;
 import org.opensaml.saml2.metadata.provider.MetadataProvider;
 import org.opensaml.saml2.metadata.provider.MetadataProviderException;
 import org.opensaml.xml.parse.ParserPool;
 import org.opensaml.xml.parse.StaticBasicParserPool;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.config.MethodInvokingFactoryBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -100,8 +102,17 @@ import com.vdenotaris.spring.boot.security.saml.web.core.SAMLUserDetailsServiceI
 @EnableGlobalMethodSecurity(securedEnabled = true)
 public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
 
-  @Autowired
   private SAMLUserDetailsServiceImpl samlUserDetailsServiceImpl;
+  private DefaultResourceLoader resourceLoader;
+
+  @Value("${security.saml.sp.id}")
+  private String spEntityId;
+
+  @Autowired
+  public WebSecurityConfig(SAMLUserDetailsServiceImpl samlUserDetailsServiceImpl) {
+    this.samlUserDetailsServiceImpl = samlUserDetailsServiceImpl;
+    this.resourceLoader = new DefaultResourceLoader();
+  }
 
   // Initialization of the velocity engine
   @Bean
@@ -197,8 +208,7 @@ public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
   // Central storage of cryptographic keys
   @Bean
   public KeyManager keyManager() {
-    DefaultResourceLoader loader = new DefaultResourceLoader();
-    Resource storeFile = loader.getResource("classpath:/saml/samlKeystore.jks");
+    Resource storeFile = resourceLoader.getResource("classpath:/saml/samlKeystore.jks");
     String storePass = "nalle123";
     Map<String, String> passwords = new HashMap<String, String>();
     passwords.put("apollo", "nalle123");
@@ -257,7 +267,7 @@ public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
     return extendedMetadata;
   }
 
-  // IDP Discovery Service
+  // IDP Discovery Service -- not including discovery.
   @Bean
   public SAMLDiscovery samlIDPDiscovery() {
     SAMLDiscovery idpDiscovery = new SAMLDiscovery();
@@ -267,35 +277,50 @@ public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
 
   @Bean
   @Qualifier("idp-ssocircle")
-  public ExtendedMetadataDelegate ssoCircleExtendedMetadataProvider() throws MetadataProviderException {
-    String idpSSOCircleMetadataURL = "https://idp.ssocircle.com/idp-meta.xml";
+  public ExtendedMetadataDelegate ssoCircleExtendedMetadataProvider() throws MetadataProviderException, IOException {
     Timer backgroundTaskTimer = new Timer(true);
-    HTTPMetadataProvider httpMetadataProvider =
-        new HTTPMetadataProvider(backgroundTaskTimer, httpClient(), idpSSOCircleMetadataURL);
-    httpMetadataProvider.setParserPool(parserPool());
+    Resource idpxml = resourceLoader.getResource("classpath:/saml/metadata/ssocircle-idp-meta.xml");
+    FilesystemMetadataProvider metadataProvider = new FilesystemMetadataProvider(backgroundTaskTimer, idpxml.getFile());
+    metadataProvider.setParserPool(parserPool());
     ExtendedMetadataDelegate extendedMetadataDelegate =
-        new ExtendedMetadataDelegate(httpMetadataProvider, extendedMetadata());
+        new ExtendedMetadataDelegate(metadataProvider, extendedMetadata());
     extendedMetadataDelegate.setMetadataTrustCheck(true);
     extendedMetadataDelegate.setMetadataRequireSignature(false);
     return extendedMetadataDelegate;
   }
 
-  // IDP Metadata configuration - paths to metadata of IDPs in circle of trust
-  // is here
-  // Do no forget to call iniitalize method on providers
+  @Bean
+  @Qualifier("idp-nwrishib")
+  public ExtendedMetadataDelegate nwriShibExtendedMetadataProvider() throws MetadataProviderException, IOException {
+    Timer backgroundTaskTimer = new Timer(true);
+    Resource idpxml = resourceLoader.getResource("classpath:/saml/metadata/nwri-shib-idp-meta.xml");
+    FilesystemMetadataProvider metadataProvider = new FilesystemMetadataProvider(backgroundTaskTimer, idpxml.getFile());
+    metadataProvider.setParserPool(parserPool());
+    ExtendedMetadataDelegate extendedMetadataDelegate =
+        new ExtendedMetadataDelegate(metadataProvider, extendedMetadata());
+    extendedMetadataDelegate.setMetadataTrustCheck(true);
+    extendedMetadataDelegate.setMetadataRequireSignature(false);
+    return extendedMetadataDelegate;
+  }
+
+  // IDP Metadata configuration - paths to metadata of IDPs in circle of trust is here.
+  // Do not forget to call initialize method on providers.
   @Bean
   @Qualifier("metadata")
-  public CachingMetadataManager metadata() throws MetadataProviderException {
+  public CachingMetadataManager metadata() throws MetadataProviderException, IOException {
     List<MetadataProvider> providers = new ArrayList<MetadataProvider>();
     providers.add(ssoCircleExtendedMetadataProvider());
-    return new CachingMetadataManager(providers);
+    providers.add(nwriShibExtendedMetadataProvider());
+    CachingMetadataManager mgr = new CachingMetadataManager(providers);
+    return mgr;
   }
 
   // Filter automatically generates default SP metadata
+  // Metadata available at runtime at: http(s)://server:port/context/saml/metadata
   @Bean
   public MetadataGenerator metadataGenerator() {
     MetadataGenerator metadataGenerator = new MetadataGenerator();
-    metadataGenerator.setEntityId("com:vdenotaris:spring:sp");
+    metadataGenerator.setEntityId(spEntityId);
     metadataGenerator.setExtendedMetadata(extendedMetadata());
     metadataGenerator.setIncludeDiscoveryExtension(false);
     metadataGenerator.setKeyManager(keyManager());
@@ -479,8 +504,8 @@ public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
     http.csrf().disable();
     http.addFilterBefore(metadataGeneratorFilter(), ChannelProcessingFilter.class).addFilterAfter(samlFilter(),
         BasicAuthenticationFilter.class);
-    http.authorizeRequests().antMatchers("/").permitAll().antMatchers("/error").permitAll().antMatchers("/saml/**")
-        .permitAll().anyRequest().authenticated();
+    http.authorizeRequests().antMatchers("/", "/error", "/saml/**").permitAll()
+      .anyRequest().authenticated();
     http.logout().logoutSuccessUrl("/");
   }
 
